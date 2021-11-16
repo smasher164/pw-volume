@@ -9,15 +9,15 @@ use std::{process, process::Command};
 enum PipeWireObject<'a> {
     #[serde(borrow)]
     Metadata(PipeWireInterfaceMetadata<'a>),
+
     #[serde(borrow)]
     Node(PipeWireInterfaceNode<'a>),
-
     Value(Value),
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
 struct PipeWireInterfaceNode<'a> {
-    id: i64, // TODO
+    id: i64,
 
     #[serde(rename = "type")]
     typ: &'a str,
@@ -30,6 +30,7 @@ struct PipeWireInterfaceNode<'a> {
 struct NodeInfo<'a> {
     #[serde(borrow)]
     props: NodeProps<'a>,
+
     #[serde(borrow)]
     params: NodeParams<'a>,
 }
@@ -45,11 +46,10 @@ struct NodeParams<'a> {
     #[serde(rename = "EnumFormat")]
     enum_format: Vec<NodeEnumFormat>,
 
-    // #[serde(skip)]
-    // _phantom_data: std::marker::PhantomData<&'a ()>
     #[serde(borrow)]
     #[serde(rename = "PropInfo")]
     prop_info: Vec<NodePropInfo<'a>>,
+
     #[serde(rename = "Props")]
     props: Vec<NodeProp>,
 }
@@ -62,6 +62,7 @@ struct NodeEnumFormat {
 #[derive(Deserialize, Debug, PartialEq)]
 struct NodePropInfo<'a> {
     id: &'a str,
+
     #[serde(rename = "type")]
     typ: NodePropInfoType,
 }
@@ -91,6 +92,7 @@ enum NodeProp {
 struct NodePropVolume {
     volume: f64,
     mute: bool,
+
     #[serde(rename = "channelVolumes")]
     channel_volumes: Vec<f64>,
 }
@@ -99,6 +101,7 @@ struct NodePropVolume {
 struct PipeWireInterfaceMetadata<'a> {
     #[serde(rename = "type")]
     typ: &'a str,
+
     #[serde(borrow)]
     metadata: Vec<Metadata<'a>>,
 }
@@ -106,6 +109,7 @@ struct PipeWireInterfaceMetadata<'a> {
 #[derive(Deserialize, Debug, PartialEq)]
 struct Metadata<'a> {
     key: &'a str,
+
     #[serde(borrow)]
     value: MetadataValue<'a>,
 }
@@ -128,6 +132,7 @@ struct PipeWireCommand {
 }
 
 fn main() {
+    // parse cli flags
     let decimal = Regex::new(r"^(\+|-)?\d+(\.\d*)?%$").unwrap();
     let matches = App::new("pw-volume")
         .about("Basic interface to PipeWire volume controls")
@@ -151,12 +156,12 @@ fn main() {
         )
         .subcommand(
             SubCommand::with_name("change")
-                .about("adjusts volume by decimal number, e.g. '+1', '-0.5'")
+                .about("adjusts volume by decimal percentage, e.g. '+1%', '-0.5%'")
                 .setting(AppSettings::ArgRequiredElseHelp)
                 .setting(AppSettings::AllowLeadingHyphen)
                 .arg(
                     Arg::with_name("DELTA")
-                        .help("decimal number, e.g. '+1', '-0.5'")
+                        .help("decimal percentage, e.g. '+1%', '-0.5%'")
                         .takes_value(true)
                         .required(true)
                         .allow_hyphen_values(true)
@@ -164,17 +169,21 @@ fn main() {
                             if decimal.is_match(&s) {
                                 Ok(())
                             } else {
-                                Err(format!(r#""{}" is not a decimal number"#, s))
+                                Err(format!(r#""{}" is not a decimal percentage"#, s))
                             }
                         }),
                 ),
         )
         .get_matches();
+
+    // call pw-dump and unmarshal its output
     let output = Command::new("pw-dump")
         .output()
         .expect("failed to execute pw-dump");
     let obj: Vec<PipeWireObject> =
         serde_json::from_slice(&output.stdout).expect("failed to unmarshal PipeWireObject");
+
+    // find the default audio sink from the dump
     let default_audio_sink = obj
         .iter()
         .filter_map(|o| match o {
@@ -191,7 +200,7 @@ fn main() {
         })
         .expect("failed to determine default audio sink");
 
-    // find node whose default audio sink is ours.
+    // find node whose default audio sink is ours
     let node = obj
         .iter()
         .find_map(|o| match o {
@@ -205,6 +214,7 @@ fn main() {
         })
         .unwrap_or_else(|| panic!("failed to find node for audio sink: {}", default_audio_sink));
 
+    // read volume property info
     let volume_prop = node
         .info
         .params
@@ -215,15 +225,17 @@ fn main() {
             _ => None,
         })
         .unwrap_or_else(|| panic!("failed to determine volume range for node: {}", node.id));
+    // like min and max to compute the range
     let range = volume_prop.max - volume_prop.min;
-    if range <= 0.0 {
-        // In case JSON from volume range is invalid.
-        panic!(
-            "volume range ({}, {}) is not positive",
-            volume_prop.min, volume_prop.max
-        );
-    }
+    // in case JSON from volume range is invalid
+    assert!(
+        range > 0.0,
+        "volume range ({}, {}) is not positive",
+        volume_prop.min,
+        volume_prop.max
+    );
 
+    // read the current volume and mute status
     let (curr_vol, curr_mute) = node
         .info
         .params
@@ -234,6 +246,8 @@ fn main() {
             _ => None,
         })
         .unwrap_or_else(|| panic!("failed to determine volume for node: {}", node.id));
+
+    // build and send a command to pw-cli to update audio state
     let mut cmd: PipeWireCommand = Default::default();
     match matches.subcommand() {
         ("mute", Some(arg)) => match arg.value_of("TRANSITION") {
