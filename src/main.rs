@@ -89,11 +89,12 @@ enum NodeProp {
     Value(Value),
 }
 
-#[derive(Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct NodePropVolume {
     volume: f64,
     mute: bool,
 
+    #[serde(skip_serializing)]
     #[serde(rename = "channelVolumes")]
     channel_volumes: Vec<f64>,
 }
@@ -175,6 +176,7 @@ fn main() {
                         }),
                 ),
         )
+        .subcommand(SubCommand::with_name("status").about("get volume and mute information"))
         .get_matches();
 
     // call pw-dump and unmarshal its output
@@ -221,7 +223,7 @@ fn main() {
         .params
         .prop_info
         .iter()
-        .find_map(|p| match  p {
+        .find_map(|p| match p {
             NodePropInfo::Volume(v) => Some(&v.typ),
             _ => None,
         })
@@ -237,13 +239,13 @@ fn main() {
     );
 
     // read the current volume and mute status
-    let (curr_vol, curr_mute) = node
+    let status = node
         .info
         .params
         .props
         .iter()
         .find_map(|p| match p {
-            NodeProp::Volume(v) => Some((v.volume, v.mute)),
+            NodeProp::Volume(v) => Some(v),
             _ => None,
         })
         .unwrap_or_else(|| panic!("failed to determine volume for node: {}", node.id));
@@ -253,16 +255,24 @@ fn main() {
     match matches.subcommand() {
         ("mute", Some(arg)) => match arg.value_of("TRANSITION") {
             Some("on") => cmd.mute = true,
-            Some("toggle") => cmd.mute = !curr_mute,
+            Some("toggle") => cmd.mute = !status.mute,
             _ => (), // Some("off") => cmd.mute is already false
         },
         ("change", Some(arg)) => {
             let delta = arg.value_of("DELTA").unwrap();
             let percent = &delta[..delta.len() - 1].parse::<f64>().unwrap();
             let increment = percent * range / 100.0;
-            let new_vol = (curr_vol + increment).clamp(volume_prop.min, volume_prop.max);
+            let new_vol = (status.volume + increment).clamp(volume_prop.min, volume_prop.max);
             cmd.volume = Some(new_vol);
-        }
+        },
+        ("status", _) => {
+            println!("{}", serde_json::to_string(&NodePropVolume{
+                volume: status.volume/range,
+                mute: status.mute,
+                channel_volumes: vec![],
+            }).unwrap());
+            process::exit(0);
+        },
         (_, _) => unreachable!("argument parsing should have failed by now"),
     };
     let set_cmd = serde_json::to_string(&cmd).unwrap();
