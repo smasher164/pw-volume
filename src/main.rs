@@ -60,18 +60,19 @@ struct NodeEnumFormat {
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
-struct NodePropInfo<'a> {
-    id: &'a str,
-
-    #[serde(rename = "type")]
-    typ: NodePropInfoType,
+#[serde(untagged)]
+enum NodePropInfo<'a> {
+    #[serde(borrow)]
+    Volume(NodePropInfoVolume<'a>),
+    Value(Value),
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
-#[serde(untagged)]
-enum NodePropInfoType {
-    Volume(NodePropInfoTypeVolume),
-    Value(Value),
+struct NodePropInfoVolume<'a> {
+    id: &'a str,
+
+    #[serde(rename = "type")]
+    typ: NodePropInfoTypeVolume,
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
@@ -220,8 +221,8 @@ fn main() {
         .params
         .prop_info
         .iter()
-        .find_map(|p| match &p.typ {
-            NodePropInfoType::Volume(v) => Some(v),
+        .find_map(|p| match  p {
+            NodePropInfo::Volume(v) => Some(&v.typ),
             _ => None,
         })
         .unwrap_or_else(|| panic!("failed to determine volume range for node: {}", node.id));
