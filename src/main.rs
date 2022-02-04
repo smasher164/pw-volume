@@ -89,12 +89,11 @@ enum NodeProp {
     Value(Value),
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Deserialize, Debug, PartialEq)]
 struct NodePropVolume {
     volume: f64,
     mute: bool,
 
-    #[serde(skip_serializing)]
     #[serde(rename = "channelVolumes")]
     channel_volumes: Vec<f64>,
 }
@@ -266,11 +265,11 @@ fn main() {
             cmd.volume = Some(new_vol);
         },
         ("status", _) => {
-            println!("{}", serde_json::to_string(&NodePropVolume{
-                volume: status.volume/range,
-                mute: status.mute,
-                channel_volumes: vec![],
-            }).unwrap());
+            if status.mute {
+                println!(r#"{{"alt":"mute"}}"#);
+            } else {
+                println!(r#"{{"percentage":{}}}"#, (status.volume * 100.0)/range);
+            }
             process::exit(0);
         },
         (_, _) => unreachable!("argument parsing should have failed by now"),
