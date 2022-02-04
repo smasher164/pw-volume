@@ -268,7 +268,7 @@ fn main() {
             if status.mute {
                 println!(r#"{{"alt":"mute"}}"#);
             } else {
-                println!(r#"{{"percentage":{}}}"#, (status.volume * 100.0)/range);
+                println!(r#"{{"percentage":{:.0}}}"#, (status.volume * 100.0)/range);
             }
             process::exit(0);
         },
