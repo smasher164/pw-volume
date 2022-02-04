@@ -266,9 +266,10 @@ fn main() {
         },
         ("status", _) => {
             if status.mute {
-                println!(r#"{{"alt":"mute"}}"#);
+                println!(r#"{{"alt":"mute", "tooltip":"muted"}}"#);
             } else {
-                println!(r#"{{"percentage":{:.0}}}"#, (status.volume * 100.0)/range);
+                let percentage = (status.volume * 100.0)/range;
+                println!(r#"{{"percentage":{:.0}, "tooltip":"{}%"}}"#, percentage, percentage);
             }
             process::exit(0);
         },
