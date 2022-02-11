@@ -1,5 +1,4 @@
 use clap::{App, AppSettings, Arg, SubCommand};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{process, process::Command};
@@ -132,9 +131,15 @@ struct PipeWireCommand {
     channel_volumes: Option<Vec<f64>>,
 }
 
+fn is_decimal_percentage(value: &str) -> bool {
+    value
+        .strip_suffix("%")
+        .and_then(|value| value.parse::<f32>().ok())
+        .is_some()
+}
+
 fn main() {
     // parse cli flags
-    let decimal = Regex::new(r"^(\+|-)?\d+(\.\d*)?%$").unwrap();
     let matches = App::new("pw-volume")
         .about("Basic interface to PipeWire volume controls")
         .settings(&[
@@ -167,7 +172,7 @@ fn main() {
                         .required(true)
                         .allow_hyphen_values(true)
                         .validator(move |s| {
-                            if decimal.is_match(&s) {
+                            if is_decimal_percentage(&s) {
                                 Ok(())
                             } else {
                                 Err(format!(r#""{}" is not a decimal percentage"#, s))
