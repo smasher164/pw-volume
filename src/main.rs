@@ -55,7 +55,7 @@ struct NodeParams<'a> {
 
 #[derive(Deserialize, Debug, PartialEq)]
 struct NodeEnumFormat {
-    channels: i64,
+    channels: Option<i64>,
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
