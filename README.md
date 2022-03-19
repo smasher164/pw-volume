@@ -30,11 +30,12 @@ bindsym XF86AudioMute exec "pw-volume mute toggle; pkill -RTMIN+8 waybar"
 "custom/pipewire": {
     "exec": "pw-pipewire status",
     "return-type": "json",
-    "interval": once,
+    "interval": "once",
     "signal": 8,
     "format": "{icon} {percentage}",
     "format-icons": {
-            "default": ["󰕿", "󰖀", "󰕾"]
-        }
+        "mute": "",
+        "default": ["󰕿", "󰖀", "󰕾"]
+    }
 },
 ```
