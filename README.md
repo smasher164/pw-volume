@@ -30,7 +30,8 @@ bindsym XF86AudioMute exec pw-volume mute toggle
 "custom/pipewire": {
     "exec": "pw-pipewire status",
     "return-type": "json",
-    "interval": 3,
+    "interval": once,
+    "signal": 8,
     "format": "{icon} {percentage}",
     "format-icons": {
             "default": ["󰕿", "󰖀", "󰕾"]
