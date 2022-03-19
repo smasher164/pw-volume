@@ -27,8 +27,8 @@ bindsym XF86AudioMute exec pw-volume mute toggle
 ```
 #### Waybar
 ```
-"custom/pw-volume": {
-    "exec": "pw-volume status",
+"custom/pipewire": {
+    "exec": "pw-pipewire status",
     "return-type": "json",
     "interval": 3,
     "format": "{icon} {percentage}",
