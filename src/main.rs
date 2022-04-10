@@ -183,7 +183,7 @@ fn pw_dump(
         .prop_info
         .iter()
         .find_map(|p| match p {
-            NodePropInfo::Volume(v) => Some(&v.typ),
+            NodePropInfo::Volume(v) if v.id == "volume" => Some(&v.typ),
             _ => None,
         })
         .ok_or(format!(
