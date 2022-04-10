@@ -1,7 +1,7 @@
-use clap::{App, AppSettings, Arg, SubCommand};
+use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{process, process::Command};
+use std::{error, process::Command};
 
 #[derive(Deserialize, Debug, PartialEq)]
 #[serde(untagged)]
@@ -138,6 +138,123 @@ fn is_decimal_percentage(value: &str) -> bool {
         .is_some()
 }
 
+fn pw_dump(
+    obj: Vec<PipeWireObject<'_>>,
+    matches: &ArgMatches<'_>,
+) -> Result<(), Box<dyn error::Error>> {
+    // find the default audio sink from the dump
+    let default_audio_sink = obj
+        .iter()
+        .filter_map(|o| match o {
+            PipeWireObject::Metadata(md) if md.typ == "PipeWire:Interface:Metadata" => Some(md),
+            _ => None,
+        })
+        .flat_map(|md| &md.metadata)
+        .find_map(|md| {
+            if md.key == "default.audio.sink" {
+                Some(md.value.name)
+            } else {
+                None
+            }
+        })
+        .ok_or("failed to determine default audio sink")?;
+
+    // find node whose default audio sink is ours
+    let node = obj
+        .iter()
+        .find_map(|o| match o {
+            PipeWireObject::Node(n)
+                if n.typ == "PipeWire:Interface:Node"
+                    && n.info.props.node_name == default_audio_sink =>
+            {
+                Some(n)
+            }
+            _ => None,
+        })
+        .ok_or(format!(
+            "failed to find node for audio sink: {}",
+            default_audio_sink
+        ))?;
+
+    // read volume property info
+    let volume_prop = node
+        .info
+        .params
+        .prop_info
+        .iter()
+        .find_map(|p| match p {
+            NodePropInfo::Volume(v) => Some(&v.typ),
+            _ => None,
+        })
+        .ok_or(format!(
+            "failed to determine volume range for node: {}",
+            node.id
+        ))?;
+
+    // like min and max to compute the range
+    let range = volume_prop.max - volume_prop.min;
+    // in case JSON from volume range is invalid
+    if range <= 0.0 {
+        return Err(Box::from(format!(
+            "volume range ({}, {}) is not positive",
+            volume_prop.min, volume_prop.max,
+        )));
+    }
+
+    // read the current volume and mute status
+    let status = node
+        .info
+        .params
+        .props
+        .iter()
+        .find_map(|p| match p {
+            NodeProp::Volume(v) => Some(v),
+            _ => None,
+        })
+        .ok_or(format!("failed to determine volume for node: {}", node.id))?;
+
+    // build and send a command to pw-cli to update audio state
+    let mut cmd: PipeWireCommand = Default::default();
+    match matches.subcommand() {
+        ("mute", Some(arg)) => match arg.value_of("TRANSITION") {
+            Some("on") => cmd.mute = true,
+            Some("toggle") => cmd.mute = !status.mute,
+            _ => (), // Some("off") => cmd.mute is already false
+        },
+        ("change", Some(arg)) => {
+            let delta = arg.value_of("DELTA").ok_or("DELTA argument not found")?;
+            let percent = &delta[..delta.len() - 1].parse::<f64>()?;
+            let increment = percent * range / 100.0;
+            let new_vol = (status.volume + increment).clamp(volume_prop.min, volume_prop.max);
+            cmd.volume = Some(new_vol);
+        }
+        ("status", _) => {
+            if status.mute {
+                println!(r#"{{"alt":"mute", "tooltip":"muted"}}"#);
+            } else {
+                let percentage = (status.volume * 100.0) / range;
+                println!(
+                    r#"{{"percentage":{:.0}, "tooltip":"{}%"}}"#,
+                    percentage, percentage
+                );
+            }
+            return Ok(());
+        }
+        (_, _) => unreachable!("argument parsing should have failed by now"),
+    };
+    let set_cmd = serde_json::to_string(&cmd)?;
+    let code = Command::new("pw-cli")
+        .args(["set-param", &node.id.to_string(), "Props", &set_cmd])
+        .spawn()?
+        .wait()?
+        .code()
+        .ok_or("pw-cli terminated by signal")?;
+    if code != 0 {
+        return Err(Box::from("pw-cli did not exit successfully"));
+    }
+    Ok(())
+}
+
 fn main() {
     // parse cli flags
     let matches = App::new("pw-volume")
@@ -190,105 +307,5 @@ fn main() {
     let obj: Vec<PipeWireObject> =
         serde_json::from_slice(&output.stdout).expect("failed to unmarshal PipeWireObject");
 
-    // find the default audio sink from the dump
-    let default_audio_sink = obj
-        .iter()
-        .filter_map(|o| match o {
-            PipeWireObject::Metadata(md) if md.typ == "PipeWire:Interface:Metadata" => Some(md),
-            _ => None,
-        })
-        .flat_map(|md| &md.metadata)
-        .find_map(|md| {
-            if md.key == "default.audio.sink" {
-                Some(md.value.name)
-            } else {
-                None
-            }
-        })
-        .expect("failed to determine default audio sink");
-
-    // find node whose default audio sink is ours
-    let node = obj
-        .iter()
-        .find_map(|o| match o {
-            PipeWireObject::Node(n)
-                if n.typ == "PipeWire:Interface:Node"
-                    && n.info.props.node_name == default_audio_sink =>
-            {
-                Some(n)
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("failed to find node for audio sink: {}", default_audio_sink));
-
-    // read volume property info
-    let volume_prop = node
-        .info
-        .params
-        .prop_info
-        .iter()
-        .find_map(|p| match p {
-            NodePropInfo::Volume(v) => Some(&v.typ),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("failed to determine volume range for node: {}", node.id));
-    // like min and max to compute the range
-    let range = volume_prop.max - volume_prop.min;
-    // in case JSON from volume range is invalid
-    assert!(
-        range > 0.0,
-        "volume range ({}, {}) is not positive",
-        volume_prop.min,
-        volume_prop.max
-    );
-
-    // read the current volume and mute status
-    let status = node
-        .info
-        .params
-        .props
-        .iter()
-        .find_map(|p| match p {
-            NodeProp::Volume(v) => Some(v),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("failed to determine volume for node: {}", node.id));
-
-    // build and send a command to pw-cli to update audio state
-    let mut cmd: PipeWireCommand = Default::default();
-    match matches.subcommand() {
-        ("mute", Some(arg)) => match arg.value_of("TRANSITION") {
-            Some("on") => cmd.mute = true,
-            Some("toggle") => cmd.mute = !status.mute,
-            _ => (), // Some("off") => cmd.mute is already false
-        },
-        ("change", Some(arg)) => {
-            let delta = arg.value_of("DELTA").unwrap();
-            let percent = &delta[..delta.len() - 1].parse::<f64>().unwrap();
-            let increment = percent * range / 100.0;
-            let new_vol = (status.volume + increment).clamp(volume_prop.min, volume_prop.max);
-            cmd.volume = Some(new_vol);
-        },
-        ("status", _) => {
-            if status.mute {
-                println!(r#"{{"alt":"mute", "tooltip":"muted"}}"#);
-            } else {
-                let percentage = (status.volume * 100.0)/range;
-                println!(r#"{{"percentage":{:.0}, "tooltip":"{}%"}}"#, percentage, percentage);
-            }
-            process::exit(0);
-        },
-        (_, _) => unreachable!("argument parsing should have failed by now"),
-    };
-    let set_cmd = serde_json::to_string(&cmd).unwrap();
-    process::exit(
-        Command::new("pw-cli")
-            .args(["set-param", &node.id.to_string(), "Props", &set_cmd])
-            .spawn()
-            .unwrap()
-            .wait()
-            .unwrap()
-            .code()
-            .unwrap(),
-    );
+    pw_dump(obj, &matches).unwrap();
 }
