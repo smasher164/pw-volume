@@ -183,7 +183,7 @@ fn pw_dump(
         .prop_info
         .iter()
         .find_map(|p| match p {
-            NodePropInfo::Volume(v) if v.id == "volume" => Some(&v.typ),
+            NodePropInfo::Volume(v) if v.id == "channelVolumes" => Some(&v.typ),
             _ => None,
         })
         .ok_or(format!(
@@ -213,6 +213,10 @@ fn pw_dump(
         })
         .ok_or(format!("failed to determine volume for node: {}", node.id))?;
 
+    if status.channel_volumes.is_empty() {
+        return Err(Box::from("no volume channels present"));
+    }
+
     // build and send a command to pw-cli to update audio state
     let mut cmd: PipeWireCommand = Default::default();
     match matches.subcommand() {
@@ -225,14 +229,20 @@ fn pw_dump(
             let delta = arg.value_of("DELTA").ok_or("DELTA argument not found")?;
             let percent = &delta[..delta.len() - 1].parse::<f64>()?;
             let increment = percent * range / 100.0;
-            let new_vol = (status.volume + increment).clamp(volume_prop.min, volume_prop.max);
-            cmd.volume = Some(new_vol);
+            let mut vols = Vec::with_capacity(status.channel_volumes.len());
+            for vol in status.channel_volumes.iter() {
+                let new_vol = (vol + increment).clamp(volume_prop.min, volume_prop.max);
+                vols.push(new_vol);
+            }
+            cmd.channel_volumes = Some(vols);
         }
         ("status", _) => {
             if status.mute {
                 println!(r#"{{"alt":"mute", "tooltip":"muted"}}"#);
             } else {
-                let percentage = (status.volume * 100.0) / range;
+                // assumes that all channels have the same volume.
+                let vol = status.channel_volumes[0];
+                let percentage = (vol * 100.0) / range;
                 println!(
                     r#"{{"percentage":{:.0}, "tooltip":"{}%"}}"#,
                     percentage, percentage
