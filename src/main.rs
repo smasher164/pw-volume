@@ -1,7 +1,8 @@
+use anyhow::{anyhow, ensure};
 use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{error, process::Command};
+use std::process::Command;
 
 #[derive(Deserialize, Debug, PartialEq)]
 #[serde(untagged)]
@@ -138,19 +139,7 @@ fn is_decimal_percentage(value: &str) -> bool {
         .is_some()
 }
 
-fn pw_dump(
-    obj: Vec<PipeWireObject<'_>>,
-    matches: &ArgMatches<'_>,
-) -> Result<(), Box<dyn error::Error>> {
-    macro_rules! check {
-        ($cond:expr, $($arg:tt)*) => {
-            if $cond {
-                Ok(())
-            } else {
-                Err(Box::from(format!($($arg)*)) as Box<dyn error::Error>)
-            }
-        };
-    }
+fn pw_dump(obj: Vec<PipeWireObject<'_>>, matches: &ArgMatches<'_>) -> anyhow::Result<()> {
     // find the default audio sink from the dump
     let default_audio_sink = obj
         .iter()
@@ -166,7 +155,7 @@ fn pw_dump(
                 None
             }
         })
-        .ok_or("failed to determine default audio sink")?;
+        .ok_or(anyhow!("failed to determine default audio sink"))?;
 
     // find node whose default audio sink is ours
     let node = obj
@@ -180,7 +169,7 @@ fn pw_dump(
             }
             _ => None,
         })
-        .ok_or(format!(
+        .ok_or(anyhow!(
             "failed to find node for audio sink: {}",
             default_audio_sink
         ))?;
@@ -195,7 +184,7 @@ fn pw_dump(
             NodePropInfo::Volume(v) if v.id == "channelVolumes" => Some(&v.typ),
             _ => None,
         })
-        .ok_or(format!(
+        .ok_or(anyhow!(
             "failed to determine volume range for node: {}",
             node.id
         ))?;
@@ -203,12 +192,12 @@ fn pw_dump(
     // like min and max to compute the range
     let range = volume_prop.max - volume_prop.min;
     // in case JSON from volume range is invalid
-    check!(
+    ensure!(
         range > 0.0,
         "volume range ({}, {}) is not positive",
         volume_prop.min,
         volume_prop.max
-    )?;
+    );
 
     // read the current volume and mute status
     let status = node
@@ -220,12 +209,12 @@ fn pw_dump(
             NodeProp::Volume(v) => Some(v),
             _ => None,
         })
-        .ok_or(format!("failed to determine volume for node: {}", node.id))?;
+        .ok_or(anyhow!("failed to determine volume for node: {}", node.id))?;
 
-    check!(
+    ensure!(
         !status.channel_volumes.is_empty(),
         "no volume channels present"
-    )?;
+    );
 
     // build and send a command to pw-cli to update audio state
     let mut cmd: PipeWireCommand = Default::default();
@@ -236,7 +225,9 @@ fn pw_dump(
             _ => (), // Some("off") => cmd.mute is already false
         },
         ("change", Some(arg)) => {
-            let delta = arg.value_of("DELTA").ok_or("DELTA argument not found")?;
+            let delta = arg
+                .value_of("DELTA")
+                .ok_or(anyhow!("DELTA argument not found"))?;
             let percent = &delta[..delta.len() - 1].parse::<f64>()?;
             let increment = percent * range / 100.0;
             let mut vols = Vec::with_capacity(status.channel_volumes.len());
@@ -268,8 +259,9 @@ fn pw_dump(
         .spawn()?
         .wait()?
         .code()
-        .ok_or("pw-cli terminated by signal")?;
-    check!(code == 0, "pw-cli did not exit successfully")
+        .ok_or(anyhow!("pw-cli terminated by signal"))?;
+    ensure!(code == 0, "pw-cli did not exit successfully");
+    Ok(())
 }
 
 fn main() {
