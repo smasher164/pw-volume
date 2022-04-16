@@ -142,6 +142,15 @@ fn pw_dump(
     obj: Vec<PipeWireObject<'_>>,
     matches: &ArgMatches<'_>,
 ) -> Result<(), Box<dyn error::Error>> {
+    macro_rules! check {
+        ($cond:expr, $($arg:tt)*) => {
+            if $cond {
+                Ok(())
+            } else {
+                Err(Box::from(format!($($arg)*)) as Box<dyn error::Error>)
+            }
+        };
+    }
     // find the default audio sink from the dump
     let default_audio_sink = obj
         .iter()
@@ -194,12 +203,12 @@ fn pw_dump(
     // like min and max to compute the range
     let range = volume_prop.max - volume_prop.min;
     // in case JSON from volume range is invalid
-    if range <= 0.0 {
-        return Err(Box::from(format!(
-            "volume range ({}, {}) is not positive",
-            volume_prop.min, volume_prop.max,
-        )));
-    }
+    check!(
+        range > 0.0,
+        "volume range ({}, {}) is not positive",
+        volume_prop.min,
+        volume_prop.max
+    )?;
 
     // read the current volume and mute status
     let status = node
@@ -213,9 +222,10 @@ fn pw_dump(
         })
         .ok_or(format!("failed to determine volume for node: {}", node.id))?;
 
-    if status.channel_volumes.is_empty() {
-        return Err(Box::from("no volume channels present"));
-    }
+    check!(
+        !status.channel_volumes.is_empty(),
+        "no volume channels present"
+    )?;
 
     // build and send a command to pw-cli to update audio state
     let mut cmd: PipeWireCommand = Default::default();
@@ -259,10 +269,7 @@ fn pw_dump(
         .wait()?
         .code()
         .ok_or("pw-cli terminated by signal")?;
-    if code != 0 {
-        return Err(Box::from("pw-cli did not exit successfully"));
-    }
-    Ok(())
+    check!(code == 0, "pw-cli did not exit successfully")
 }
 
 fn main() {
