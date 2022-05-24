@@ -116,7 +116,15 @@ struct Metadata<'a> {
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
-struct MetadataValue<'a> {
+#[serde(untagged)]
+enum MetadataValue<'a> {
+    #[serde(borrow)]
+    Name(MetadataValueName<'a>),
+    Value(Value),
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+struct MetadataValueName<'a> {
     name: &'a str,
 }
 
@@ -134,12 +142,19 @@ struct PipeWireCommand {
 
 fn is_decimal_percentage(value: &str) -> bool {
     value
-        .strip_suffix("%")
+        .strip_suffix('%')
         .and_then(|value| value.parse::<f32>().ok())
         .is_some()
 }
 
-fn pw_dump(obj: Vec<PipeWireObject<'_>>, matches: &ArgMatches<'_>) -> anyhow::Result<()> {
+fn parse_dump<'a>(
+    obj: &'a [PipeWireObject<'_>],
+) -> anyhow::Result<(
+    &'a PipeWireInterfaceNode<'a>,
+    &'a NodePropInfoTypeVolume,
+    f64,
+    &'a NodePropVolume,
+)> {
     // find the default audio sink from the dump
     let default_audio_sink = obj
         .iter()
@@ -148,14 +163,11 @@ fn pw_dump(obj: Vec<PipeWireObject<'_>>, matches: &ArgMatches<'_>) -> anyhow::Re
             _ => None,
         })
         .flat_map(|md| &md.metadata)
-        .find_map(|md| {
-            if md.key == "default.audio.sink" {
-                Some(md.value.name)
-            } else {
-                None
-            }
+        .find_map(|md| match &md.value {
+            MetadataValue::Name(mv) if md.key == "default.audio.sink" => Some(mv.name),
+            _ => None,
         })
-        .ok_or(anyhow!("failed to determine default audio sink"))?;
+        .ok_or_else(|| anyhow!("failed to determine default audio sink"))?;
 
     // find node whose default audio sink is ours
     let node = obj
@@ -169,7 +181,7 @@ fn pw_dump(obj: Vec<PipeWireObject<'_>>, matches: &ArgMatches<'_>) -> anyhow::Re
             }
             _ => None,
         })
-        .ok_or(anyhow!(
+        .ok_or_else(|| anyhow!(
             "failed to find node for audio sink: {}",
             default_audio_sink
         ))?;
@@ -184,7 +196,7 @@ fn pw_dump(obj: Vec<PipeWireObject<'_>>, matches: &ArgMatches<'_>) -> anyhow::Re
             NodePropInfo::Volume(v) if v.id == "channelVolumes" => Some(&v.typ),
             _ => None,
         })
-        .ok_or(anyhow!(
+        .ok_or_else(|| anyhow!(
             "failed to determine volume range for node: {}",
             node.id
         ))?;
@@ -209,13 +221,22 @@ fn pw_dump(obj: Vec<PipeWireObject<'_>>, matches: &ArgMatches<'_>) -> anyhow::Re
             NodeProp::Volume(v) => Some(v),
             _ => None,
         })
-        .ok_or(anyhow!("failed to determine volume for node: {}", node.id))?;
+        .ok_or_else(|| anyhow!("failed to determine volume for node: {}", node.id))?;
 
     ensure!(
         !status.channel_volumes.is_empty(),
         "no volume channels present"
     );
+    Ok((node, volume_prop, range, status))
+}
 
+fn pw_cli<'a>(
+    matches: &ArgMatches<'_>,
+    node: &'a PipeWireInterfaceNode<'a>,
+    volume_prop: &'a NodePropInfoTypeVolume,
+    range: f64,
+    status: &'a NodePropVolume,
+) -> anyhow::Result<()> {
     // build and send a command to pw-cli to update audio state
     let mut cmd: PipeWireCommand = Default::default();
     match matches.subcommand() {
@@ -227,7 +248,7 @@ fn pw_dump(obj: Vec<PipeWireObject<'_>>, matches: &ArgMatches<'_>) -> anyhow::Re
         ("change", Some(arg)) => {
             let delta = arg
                 .value_of("DELTA")
-                .ok_or(anyhow!("DELTA argument not found"))?;
+                .ok_or_else(|| anyhow!("DELTA argument not found"))?;
             let percent = &delta[..delta.len() - 1].parse::<f64>()?;
             let increment = percent * range / 100.0;
             let mut vols = Vec::with_capacity(status.channel_volumes.len());
@@ -259,9 +280,31 @@ fn pw_dump(obj: Vec<PipeWireObject<'_>>, matches: &ArgMatches<'_>) -> anyhow::Re
         .spawn()?
         .wait()?
         .code()
-        .ok_or(anyhow!("pw-cli terminated by signal"))?;
+        .ok_or_else(|| anyhow!("pw-cli terminated by signal"))?;
     ensure!(code == 0, "pw-cli did not exit successfully");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs::File, io::Read, path::PathBuf};
+    use test_case::test_case;
+
+    use super::*;
+
+    #[test_case("without_discord.txt")]
+    #[test_case("with_discord.txt")]
+    fn parse_output(filename: &str) -> anyhow::Result<()> {
+        let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "src", "testdata", filename]
+            .iter()
+            .collect();
+        let mut f = File::open(path)?;
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf)?;
+        let obj: Vec<PipeWireObject> = serde_json::from_slice(&buf)?;
+        parse_dump(&obj)?;
+        Ok(())
+    }
 }
 
 fn main() {
@@ -315,6 +358,6 @@ fn main() {
         .expect("failed to execute pw-dump");
     let obj: Vec<PipeWireObject> =
         serde_json::from_slice(&output.stdout).expect("failed to unmarshal PipeWireObject");
-
-    pw_dump(obj, &matches).unwrap();
+    let (node, volume_prop, range, status) = parse_dump(&obj).unwrap();
+    pw_cli(&matches, node, volume_prop, range, status).unwrap();
 }
