@@ -12,7 +12,50 @@ enum PipeWireObject<'a> {
 
     #[serde(borrow)]
     Node(PipeWireInterfaceNode<'a>),
+
+    #[serde(borrow)]
+    Device(PipeWireInterfaceDevice<'a>),
     Value(Value),
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+struct PipeWireInterfaceDevice<'a> {
+    id: i64,
+
+    #[serde(rename = "type")]
+    typ: &'a str,
+
+    #[serde(borrow)]
+    info: DeviceInfo<'a>,
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+struct DeviceInfo<'a> {
+    #[serde(borrow)]
+    params: DeviceParams<'a>,
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+struct DeviceParams<'a> {
+    #[serde(borrow)]
+    #[serde(rename = "Route")]
+    route: Vec<DeviceRoute<'a>>,
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+struct DeviceRoute<'a> {
+    index: i64,
+    direction: &'a str,
+    props: DeviceRouteProp,
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+struct DeviceRouteProp {
+    mute: bool,
+    #[serde(rename = "volumeBase")]
+    volume_base: f64,
+    #[serde(rename = "channelVolumes")]
+    channel_volumes: Vec<f64>,
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
@@ -37,6 +80,12 @@ struct NodeInfo<'a> {
 
 #[derive(Deserialize, Debug, PartialEq)]
 struct NodeProps<'a> {
+    #[serde(rename = "card.profile.device")]
+    card_profile_device: i64,
+
+    #[serde(rename = "device.id")]
+    device_id: i64,
+
     #[serde(rename = "node.name")]
     node_name: &'a str,
 }
@@ -130,14 +179,17 @@ struct MetadataValueName<'a> {
 
 #[derive(Serialize, Debug, Default)]
 struct PipeWireCommand {
+    index: i64,
+    device: i64,
+    props: CommandVolumeProps,
+}
+
+#[derive(Serialize, Debug, Default)]
+struct CommandVolumeProps {
     mute: bool,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    volume: Option<f64>,
-
     #[serde(rename = "channelVolumes")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    channel_volumes: Option<Vec<f64>>,
+    channel_volumes: Vec<f64>,
 }
 
 fn is_decimal_percentage(value: &str) -> bool {
@@ -149,12 +201,7 @@ fn is_decimal_percentage(value: &str) -> bool {
 
 fn parse_dump<'a>(
     obj: &'a [PipeWireObject<'_>],
-) -> anyhow::Result<(
-    &'a PipeWireInterfaceNode<'a>,
-    &'a NodePropInfoTypeVolume,
-    f64,
-    &'a NodePropVolume,
-)> {
+) -> anyhow::Result<(&'a PipeWireInterfaceNode<'a>, &'a DeviceRoute<'a>)> {
     // find the default audio sink from the dump
     let default_audio_sink = obj
         .iter()
@@ -181,68 +228,52 @@ fn parse_dump<'a>(
             }
             _ => None,
         })
-        .ok_or_else(|| anyhow!(
-            "failed to find node for audio sink: {}",
-            default_audio_sink
-        ))?;
+        .ok_or_else(|| anyhow!("failed to find node for audio sink: {}", default_audio_sink))?;
 
-    // read volume property info
-    let volume_prop = node
-        .info
-        .params
-        .prop_info
+    // get device corresponding to this node
+    let device = obj
         .iter()
-        .find_map(|p| match p {
-            NodePropInfo::Volume(v) if v.id == "channelVolumes" => Some(&v.typ),
+        .find_map(|o| match o {
+            PipeWireObject::Device(d)
+                if d.typ == "PipeWire:Interface:Device" && d.id == node.info.props.device_id =>
+            {
+                Some(d)
+            }
             _ => None,
         })
-        .ok_or_else(|| anyhow!(
-            "failed to determine volume range for node: {}",
-            node.id
-        ))?;
+        .ok_or_else(|| anyhow!("failed to find device: {}", node.info.props.device_id))?;
 
-    // like min and max to compute the range
-    let range = volume_prop.max - volume_prop.min;
-    // in case JSON from volume range is invalid
-    ensure!(
-        range > 0.0,
-        "volume range ({}, {}) is not positive",
-        volume_prop.min,
-        volume_prop.max
-    );
-
-    // read the current volume and mute status
-    let status = node
+    // get active route for audio output
+    let route = device
         .info
         .params
-        .props
+        .route
         .iter()
-        .find_map(|p| match p {
-            NodeProp::Volume(v) => Some(v),
-            _ => None,
-        })
-        .ok_or_else(|| anyhow!("failed to determine volume for node: {}", node.id))?;
+        .find(|r| r.direction == "Output")
+        .ok_or_else(|| anyhow!("failed to find output route"))?;
 
     ensure!(
-        !status.channel_volumes.is_empty(),
+        !route.props.channel_volumes.is_empty(),
         "no volume channels present"
     );
-    Ok((node, volume_prop, range, status))
+    Ok((node, route))
 }
 
 fn pw_cli<'a>(
     matches: &ArgMatches<'_>,
     node: &'a PipeWireInterfaceNode<'a>,
-    volume_prop: &'a NodePropInfoTypeVolume,
-    range: f64,
-    status: &'a NodePropVolume,
+    route: &'a DeviceRoute<'a>,
 ) -> anyhow::Result<()> {
     // build and send a command to pw-cli to update audio state
-    let mut cmd: PipeWireCommand = Default::default();
+    let mut cmd = PipeWireCommand {
+        index: route.index,
+        device: node.info.props.card_profile_device,
+        ..Default::default()
+    };
     match matches.subcommand() {
         ("mute", Some(arg)) => match arg.value_of("TRANSITION") {
-            Some("on") => cmd.mute = true,
-            Some("toggle") => cmd.mute = !status.mute,
+            Some("on") => cmd.props.mute = true,
+            Some("toggle") => cmd.props.mute = !route.props.mute,
             _ => (), // Some("off") => cmd.mute is already false
         },
         ("change", Some(arg)) => {
@@ -250,21 +281,21 @@ fn pw_cli<'a>(
                 .value_of("DELTA")
                 .ok_or_else(|| anyhow!("DELTA argument not found"))?;
             let percent = &delta[..delta.len() - 1].parse::<f64>()?;
-            let increment = percent * range / 100.0;
-            let mut vols = Vec::with_capacity(status.channel_volumes.len());
-            for vol in status.channel_volumes.iter() {
-                let new_vol = (vol + increment).clamp(volume_prop.min, volume_prop.max);
+            let increment = percent * 0.01;
+            let mut vols = Vec::with_capacity(route.props.channel_volumes.len());
+            for vol in route.props.channel_volumes.iter() {
+                let new_vol = (vol + increment).clamp(0.0, 1.0);
                 vols.push(new_vol);
             }
-            cmd.channel_volumes = Some(vols);
+            cmd.props.channel_volumes = vols;
         }
         ("status", _) => {
-            if status.mute {
+            if route.props.mute {
                 println!(r#"{{"alt":"mute", "tooltip":"muted"}}"#);
             } else {
                 // assumes that all channels have the same volume.
-                let vol = status.channel_volumes[0];
-                let percentage = (vol * 100.0) / range;
+                let vol = route.props.channel_volumes[0];
+                let percentage = vol * 100.0;
                 println!(
                     r#"{{"percentage":{:.0}, "tooltip":"{}%"}}"#,
                     percentage, percentage
@@ -276,7 +307,12 @@ fn pw_cli<'a>(
     };
     let set_cmd = serde_json::to_string(&cmd)?;
     let code = Command::new("pw-cli")
-        .args(["set-param", &node.id.to_string(), "Props", &set_cmd])
+        .args([
+            "set-param",
+            &node.info.props.device_id.to_string(),
+            "Route",
+            &set_cmd,
+        ])
         .spawn()?
         .wait()?
         .code()
@@ -358,6 +394,6 @@ fn main() {
         .expect("failed to execute pw-dump");
     let obj: Vec<PipeWireObject> =
         serde_json::from_slice(&output.stdout).expect("failed to unmarshal PipeWireObject");
-    let (node, volume_prop, range, status) = parse_dump(&obj).unwrap();
-    pw_cli(&matches, node, volume_prop, range, status).unwrap();
+    let (node, route) = parse_dump(&obj).unwrap();
+    pw_cli(&matches, node, route).unwrap();
 }
