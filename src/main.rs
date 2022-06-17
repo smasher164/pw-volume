@@ -52,8 +52,6 @@ struct DeviceRoute<'a> {
 #[derive(Deserialize, Debug, PartialEq)]
 struct DeviceRouteProp {
     mute: bool,
-    #[serde(rename = "volumeBase")]
-    volume_base: f64,
     #[serde(rename = "channelVolumes")]
     channel_volumes: Vec<f64>,
 }
@@ -330,6 +328,7 @@ mod tests {
 
     #[test_case("without_discord.txt")]
     #[test_case("with_discord.txt")]
+    #[test_case("dump_aria_16.txt")]
     fn parse_output(filename: &str) -> anyhow::Result<()> {
         let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "src", "testdata", filename]
             .iter()
