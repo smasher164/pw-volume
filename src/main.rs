@@ -289,7 +289,7 @@ fn pw_cli<'a>(
         }
         ("status", _) => {
             if route.props.mute {
-                println!(r#"{{"alt":"mute", "tooltip":"muted"}}"#);
+                println!(r#"{{"alt":"mute", "tooltip":"muted", "class":"muted"}}"#);
             } else {
                 // assumes that all channels have the same volume.
                 let vol = route.props.channel_volumes[0];
