@@ -2,6 +2,12 @@
 name = "pw-volume"
 version = "0.1.0"
 edition = "2018"
+readme = "README.md"
+description = "Basic interface to PipeWire volume controls"
+repository = "https://github.com/smasher164/pw-volume"
+license = "MIT"
+keywords = ["pipewire", "volume"]
+categories = ["command-line-utilities"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
