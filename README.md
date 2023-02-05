@@ -1,5 +1,8 @@
 # pw-volume
 
+Note: WirePlumber now has support for keyboard volume control
+See https://wiki.archlinux.org/title/WirePlumber#Keyboard_volume_control
+
 ```
 Basic interface to PipeWire volume controls
 
